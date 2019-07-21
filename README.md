@@ -17,7 +17,7 @@ type  PuBsub struct {
 func main() {
     weight := 10
     me := "192.168.100.100:80"
-    b := backends.New(&PubSub{conn}, me, weight)
+    b := autobackends.New(&PubSub{conn}, me, weight)
     b.Start(me, 1)
     runtime.Goexit()
 }
@@ -37,7 +37,7 @@ type  PuBsub struct {
 }
 
 func main() {
-    b := backends.New(&PubSub{conn}, *flagMe, *flagW)
+    b := autobackends.New(&PubSub{conn}, "my-hostname:port", 1000)
 
     // wait 1s while backends registers
     time.Sleep( 2 * time.Second )
