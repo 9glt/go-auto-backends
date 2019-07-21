@@ -96,6 +96,22 @@ func (b *Backends) get() *backend {
 	return be
 }
 
+type Route struct {
+	Addr   string
+	Weight int64
+	Alive  bool
+}
+
+func (b *Backends) Routes() []Route {
+	var r []Route
+	b.mu.RLock()
+	for _, v := range b.bl {
+		r = append(r, Route{v.Addr, v.Weight, v.alive()})
+	}
+	b.mu.RUnlock()
+	return r
+}
+
 func (b *Backends) Get() (string, error) {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
