@@ -1,12 +1,17 @@
 package autobackends
 
 import (
+	"errors"
 	"fmt"
 	"log"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
+)
+
+var (
+	ErrNoAliveBackends = errors.New("no alive backends")
 )
 
 type publisher interface {
@@ -22,14 +27,17 @@ type PubSub interface {
 	subscriber
 }
 
-func New(pubsub PubSub, me string, weight int64) *Backends {
+func New(pubsub PubSub, rootarea, me string, weight int64) *Backends {
 	t := new(Backends)
 	t.pubsub = pubsub
 	t.b = make(map[string]*backend)
+	t.ab = make(map[string]map[string]*backend)
+	t.ab[rootarea] = make(map[string]*backend)
 	t.mu = &sync.RWMutex{}
 	t.ow = make(map[string]string)
 	t.subscribe()
 	t.me = me
+	t.area = rootarea
 	t.start = time.Now().UnixNano()
 	t.weight = weight
 	return t
@@ -37,6 +45,7 @@ func New(pubsub PubSub, me string, weight int64) *Backends {
 
 type backend struct {
 	Addr   string
+	Area   string
 	Seen   time.Time
 	Start  int64
 	Weight int64
@@ -62,36 +71,19 @@ type Backends struct {
 
 	mu     *sync.RWMutex
 	b      map[string]*backend
+	ab     map[string]map[string]*backend
 	bl     []*backend
 	ow     map[string]string
 	me     string
 	start  int64
 	weight int64
-}
-
-func (b *Backends) Cmd(cmd, node, key, value string) {
-	b.pubsub.Publish(cmd + " " + node + " " + key + " " + value)
-}
-
-func (b *Backends) AddRoute(src, dst string) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	b.ow[src] = dst
-}
-
-func (b *Backends) RemoveRoute(src string) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	_, exists := b.ow[src]
-	if exists {
-		delete(b.ow, src)
-	}
+	area   string
 }
 
 func (b *Backends) get() *backend {
 	var be *backend
 	for _, bl := range b.bl {
-		if bl.alive() && bl.Addr != b.me {
+		if bl.alive() && bl.Addr != b.me && bl.Area == b.area {
 			if be == nil {
 				be = bl
 				continue
@@ -104,47 +96,34 @@ func (b *Backends) get() *backend {
 	return be
 }
 
-func (b *Backends) Get() string {
+func (b *Backends) Get() (string, error) {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
 
 	bbe := b.get()
 	if bbe == nil {
-		return "no alive backends"
+		return "", ErrNoAliveBackends
 	}
 
 	addr, exists := b.ow[bbe.Addr]
 	if exists {
-		be, ok := b.b[addr]
+		be, ok := b.ab[b.area][addr]
 		if ok {
 			if be.alive() && be.Addr != b.me {
-				return addr
+				return addr, nil
 			}
 		}
 	}
-	return bbe.Addr
+	return bbe.Addr, nil
 }
 
-func (b *Backends) Start(addr string, d int) {
+func (b *Backends) Start(area, addr string, d int, weight int64) {
 	go func() {
 		for {
-			b.pubsub.Publish(fmt.Sprintf("alive %s %d %d", addr, b.start, b.weight))
+			b.pubsub.Publish(fmt.Sprintf("alive %s %s %d %d", area, addr, b.start, weight))
 			time.Sleep(time.Duration(d) * time.Second)
 		}
 	}()
-}
-
-func (b *Backends) worker() {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	ll := []*backend{}
-	for _, be := range b.bl {
-		if !be.alive() {
-			delete(b.b, be.Addr)
-		}
-		ll = append(ll, be)
-	}
-	b.bl = ll
 }
 
 func (b *Backends) subscribe() {
@@ -154,47 +133,33 @@ func (b *Backends) subscribe() {
 }
 
 func (b *Backends) ping(s string) {
-	l := strings.SplitN(s, " ", 4)
+	l := strings.Split(s, " ")
 	switch l[0] {
 	case "alive":
-		if len(l) < 4 {
+		if len(l) < 5 {
 			log.Printf("alive command invalid: %v", s)
 			return
 		}
+		_area, _addr := l[1], l[2]
 		b.mu.Lock()
-		be, ok := b.b[l[1]]
+		_, ok := b.ab[_area]
 		if !ok {
-			i, _ := strconv.Atoi(l[2])
-			w, _ := strconv.Atoi(l[3])
-			_backend := backend{l[1], time.Now(), int64(i), int64(w)}
-			b.b[l[1]] = &_backend
-			b.bl = append(b.bl, &_backend)
+			b.ab[_area] = make(map[string]*backend)
+		}
+		be, ok := b.ab[_area][_addr]
+		if !ok {
+			i, _ := strconv.Atoi(l[3])
+			w, _ := strconv.Atoi(l[4])
+			_backend := backend{_addr, _area, time.Now(), int64(i), int64(w)}
+			b.ab[_area][_addr] = &_backend
+
 			be = &_backend
+			if b.area == _area {
+				b.bl = append(b.bl, be)
+			}
 		}
 		be.ping()
 		b.mu.Unlock()
-		return
-	case "route-add":
-		if len(l) < 4 {
-			log.Printf("route-add command invalid: %v", s)
-			return
-		}
-		node, src, dst := l[1], l[2], l[3]
-		if node != b.me {
-			return
-		}
-		b.AddRoute(src, dst)
-		return
-	case "route-rm":
-		if len(l) < 3 {
-			log.Printf("route-rm command invalid: %v", s)
-			return
-		}
-		node, src := l[1], l[2]
-		if node != b.me {
-			return
-		}
-		b.RemoveRoute(src)
 		return
 	}
 
