@@ -78,6 +78,9 @@ type Backends struct {
 	weight int64
 	area   string
 	routes []Node
+
+	cacheErr error
+	cacheBe  string
 }
 
 func (b *Backends) get2() *backend {
@@ -128,6 +131,12 @@ func (b *Backends) Get() (string, error) {
 	return bbe.Addr, nil
 }
 
+func (b *Backends) GetCached() (string, error) {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	return b.cacheBe, b.cacheErr
+}
+
 func (b *Backends) Start(addr string, d int) {
 	go func() {
 		for {
@@ -162,6 +171,7 @@ func (b *Backends) ping(s string) {
 			tbe = b.b[_addr]
 		}
 		tbe.ping()
+		b.cacheBe, b.cacheErr = b.Get()
 		return
 	}
 
