@@ -63,33 +63,3 @@ go run main.go -me 127.0.0.5
 go run main.go -me 127.0.0.6
 ```
 turn random node off
-
-
-client1
-```go
-package main 
-
-import (
-    autobackends "github.com/9glt/go-auto-backends"
-)
-
-type  PuBsub struct {
-    /// implmenet autobackends.PubSub interface
-}
-
-func main() {
-    b := autobackends.New(&PubSub{conn},"root-area", "my-hostname:port", 1000)
-
-    // wait 1s while backends registers
-    time.Sleep( 2 * time.Second )
-
-    for {
-        backend, _ := b.Get()
-        println("backend", backend)
-        time.Sleep( 1 * time.Second)
-    }
-
-    runtime.Goexit()
-    
-}
-```
