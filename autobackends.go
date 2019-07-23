@@ -27,19 +27,19 @@ type PubSub interface {
 	subscriber
 }
 
-func New(pubsub PubSub, rootarea, me string, weight int64) *Backends {
+func New(pubsub PubSub, routes []Node, me string) *Backends {
 	t := new(Backends)
 	t.pubsub = pubsub
 	t.b = make(map[string]*backend)
 	t.ab = make(map[string]map[string]*backend)
-	t.ab[rootarea] = make(map[string]*backend)
 	t.mu = &sync.RWMutex{}
 	t.ow = make(map[string]string)
 	t.subscribe()
 	t.me = me
-	t.area = rootarea
+	t.routes = routes
 	t.start = time.Now().UnixNano()
-	t.weight = weight
+
+	t.Start(me, 300)
 	return t
 }
 
@@ -56,7 +56,7 @@ func (b *backend) ping() {
 }
 
 func (b *backend) alive() bool {
-	if time.Now().Sub(b.Seen).Seconds() > 3 {
+	if time.Now().Sub(b.Seen).Seconds() > 1 {
 		return false
 	}
 	return true
@@ -72,28 +72,29 @@ type Backends struct {
 	mu     *sync.RWMutex
 	b      map[string]*backend
 	ab     map[string]map[string]*backend
-	bl     []*backend
 	ow     map[string]string
 	me     string
 	start  int64
 	weight int64
 	area   string
+	routes []Node
 }
 
-func (b *Backends) get() *backend {
-	var be *backend
-	for _, bl := range b.bl {
-		if bl.alive() && bl.Addr != b.me && bl.Area == b.area {
-			if be == nil {
-				be = bl
-				continue
-			}
-			if be.Weight > bl.Weight {
-				be = bl
-			}
+func (b *Backends) get2() *backend {
+	for _, node := range b.routes {
+		if b.alive(node.Addr) && node.Addr != b.me {
+			return b.b[node.Addr]
 		}
 	}
-	return be
+	return nil
+}
+
+func (b *Backends) alive(host string) bool {
+	be, exists := b.b[host]
+	if !exists {
+		return false
+	}
+	return be.alive()
 }
 
 type Route struct {
@@ -102,42 +103,36 @@ type Route struct {
 	Alive  bool
 }
 
-func (b *Backends) Routes() []Route {
-	var r []Route
+func (b *Backends) Routes() []Node {
 	b.mu.RLock()
-	for _, v := range b.bl {
-		r = append(r, Route{v.Addr, v.Weight, v.alive()})
-	}
-	b.mu.RUnlock()
-	return r
+	defer b.mu.RUnlock()
+
+	return b.routes
+}
+
+func (b *Backends) SetRoutes(r []Node) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.routes = r
 }
 
 func (b *Backends) Get() (string, error) {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
 
-	bbe := b.get()
+	bbe := b.get2()
 	if bbe == nil {
 		return "", ErrNoAliveBackends
 	}
 
-	addr, exists := b.ow[bbe.Addr]
-	if exists {
-		be, ok := b.ab[b.area][addr]
-		if ok {
-			if be.alive() && be.Addr != b.me {
-				return addr, nil
-			}
-		}
-	}
 	return bbe.Addr, nil
 }
 
-func (b *Backends) Start(area, addr string, d int, weight int64) {
+func (b *Backends) Start(addr string, d int) {
 	go func() {
 		for {
-			b.pubsub.Publish(fmt.Sprintf("alive %s %s %d %d", area, addr, b.start, weight))
-			time.Sleep(time.Duration(d) * time.Second)
+			b.pubsub.Publish(fmt.Sprintf("alive %s %s %d %d", addr, addr, b.start, 10))
+			time.Sleep(time.Duration(d) * time.Millisecond)
 		}
 	}()
 }
@@ -158,24 +153,15 @@ func (b *Backends) ping(s string) {
 		}
 		_area, _addr := l[1], l[2]
 		b.mu.Lock()
-		_, ok := b.ab[_area]
-		if !ok {
-			b.ab[_area] = make(map[string]*backend)
-		}
-		be, ok := b.ab[_area][_addr]
-		if !ok {
+		defer b.mu.Unlock()
+		tbe, exists := b.b[_addr]
+		if !exists {
 			i, _ := strconv.Atoi(l[3])
 			w, _ := strconv.Atoi(l[4])
-			_backend := backend{_addr, _area, time.Now(), int64(i), int64(w)}
-			b.ab[_area][_addr] = &_backend
-
-			be = &_backend
-			if b.area == _area {
-				b.bl = append(b.bl, be)
-			}
+			b.b[_addr] = &backend{_addr, _area, time.Now(), int64(i), int64(w)}
+			tbe = b.b[_addr]
 		}
-		be.ping()
-		b.mu.Unlock()
+		tbe.ping()
 		return
 	}
 
