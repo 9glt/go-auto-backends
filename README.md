@@ -40,7 +40,7 @@ func main() {
     routes.Add("127.0.0.6", "127.0.0.5", -1)
     // area end
 
-    b := autobackends.New(&PubSub{conn}, routes.List(*flagMe, nil), *flagMe)
+    b := autobackends.New(autobackends.Nats("nats://127.0.0.1", "autobackends.alive"), routes.List(*flagMe, nil), *flagMe)
 
     for {
         be, err := b.Get()
