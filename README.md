@@ -41,6 +41,7 @@ func main() {
     // area end
 
     b := autobackends.New(&PubSub{conn}, routes.List(*flagMe, nil), *flagMe)
+
     for {
         be, err := b.Get()
         if err != nil {
