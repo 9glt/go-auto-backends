@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -69,15 +70,16 @@ func (b *backend) reset() {
 type Backends struct {
 	pubsub PubSub
 
-	mu     *sync.RWMutex
-	b      map[string]*backend
-	ab     map[string]map[string]*backend
-	ow     map[string]string
-	me     string
-	start  int64
-	weight int64
-	area   string
-	routes []Node
+	mu      *sync.RWMutex
+	b       map[string]*backend
+	ab      map[string]map[string]*backend
+	ow      map[string]string
+	me      string
+	start   int64
+	weight  int64
+	area    string
+	routes  []Node
+	running int32
 
 	cacheErr error
 	cacheBe  string
@@ -137,9 +139,14 @@ func (b *Backends) GetCached() (string, error) {
 	return b.cacheBe, b.cacheErr
 }
 
+func (b *Backends) Stop() {
+	atomic.StoreInt32(&b.running, 0)
+}
+
 func (b *Backends) Start(addr string, d int) {
+	b.running = 1
 	go func() {
-		for {
+		for atomic.LoadInt32(&b.running) == 1 {
 			b.pubsub.Publish(fmt.Sprintf("alive %s %s %d %d", addr, addr, b.start, 10))
 			time.Sleep(time.Duration(d) * time.Millisecond)
 		}
@@ -171,7 +178,12 @@ func (b *Backends) ping(s string) {
 			tbe = b.b[_addr]
 		}
 		tbe.ping()
-		b.cacheBe, b.cacheErr = b.Get()
+		be := b.get2()
+		if be != nil {
+			b.cacheBe, b.cacheErr = be.Addr, nil
+		} else {
+			b.cacheBe, b.cacheErr = "", ErrNoAliveBackends
+		}
 		return
 	}
 
